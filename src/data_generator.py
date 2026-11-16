@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-
+import os
 
 class SyntheticBrokerData:
 
@@ -134,3 +134,43 @@ class SyntheticBrokerData:
         self._make_trades()
         self._make_logins()
         return self
+
+    def _dirty_trades(self, df):
+        df = df.copy()
+        df["trade_date"] = df["trade_date"].dt.strftime("%Y-%m-%d")
+        df["client_id"] = df["client_id"].astype("Int64")   # integer type that can hold missing values
+
+        n_bad = int(0.005 * len(df))     # 0.5% of rows
+        k = n_bad // 5                   # rows per dirty type
+        idx = self.rng.choice(len(df), size=5 * k, replace=False)
+        dup_i, neg_i, miss_i, date_i, orph_i = np.split(idx, 5)
+
+        df.loc[neg_i, "value"] = -df.loc[neg_i, "value"]
+        df.loc[miss_i, "client_id"] = pd.NA
+        df.loc[date_i, "trade_date"] = (
+            pd.to_datetime(df.loc[date_i, "trade_date"]).dt.strftime("%d/%m/%Y")
+        )
+        df.loc[orph_i, "client_id"] = 999999
+
+        duplicates = df.iloc[dup_i]
+        return pd.concat([df, duplicates], ignore_index=True)
+
+    def write_bronze(self, path="data/bronze"):
+        os.makedirs(path, exist_ok=True)
+        load_date = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+        clients = self.clients.copy()
+        clients["signup_date"] = clients["signup_date"].dt.strftime("%Y-%m-%d")
+
+        trades = self._dirty_trades(self.trades)
+
+        logins = self.logins.copy()
+        logins["login_date"] = logins["login_date"].dt.strftime("%Y-%m-%d")
+        orph = self.rng.choice(len(logins), size=int(0.001 * len(logins)), replace=False)
+        logins.loc[orph, "client_id"] = 999999
+
+        tables = {"clients": clients, "trades": trades, "logins": logins}
+        for name, df in tables.items():
+            df["load_date"] = load_date
+            df["source_file"] = f"{name}.csv"
+            df.to_csv(os.path.join(path, f"{name}.csv"), index=False)

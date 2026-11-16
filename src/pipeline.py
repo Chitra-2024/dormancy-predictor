@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-
+import duckdb
 
 class Pipeline:
     """Moves data Bronze -> Silver -> Gold."""
@@ -166,3 +166,19 @@ class Pipeline:
         path = os.path.join(self.silver_dir, "quality_report.txt")
         with open(path, "w") as f:
             f.write("\n".join(lines))
+
+    def silver_to_gold(self, snapshot):
+        """Build one row per at-risk client at `snapshot` (e.g. '2025-06-01')."""
+        os.makedirs(self.gold_dir, exist_ok=True)
+
+        sql_path = os.path.join(os.path.dirname(__file__), "features.sql")
+        with open(sql_path) as f:
+            sql = f.read().format(silver_dir=self.silver_dir.replace("\\", "/"))
+
+        con = duckdb.connect()
+        df = con.execute(sql, [snapshot]).df()
+        con.close()
+
+        out = os.path.join(self.gold_dir, f"features_{snapshot}.parquet")
+        df.to_parquet(out, index=False)      # overwrites: idempotent
+        return df

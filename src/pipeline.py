@@ -103,4 +103,66 @@ class Pipeline:
             "trades": {"before": len(trades_raw), "after": len(trades), "rejected": len(trades_rej)},
             "logins": {"before": len(logins_raw), "after": len(logins), "rejected": len(logins_rej)},
         }
+        results = self.run_quality_checks()
+        self.write_quality_report(results)      # write the evidence first
+        failed = [name for name, r in results.items() if not r["passed"]]
+        if failed:
+            raise ValueError(f"Critical quality checks failed: {failed}")
         return self.counts
+
+    def run_quality_checks(self):
+        """Inspect the Silver files. Returns {check name: {passed, count}}."""
+        read = lambda n: pd.read_parquet(os.path.join(self.silver_dir, f"{n}.parquet"))
+        clients, trades, logins = read("clients"), read("trades"), read("logins")
+        results = {}
+
+        def record(name, bad_count):
+            results[name] = {"passed": int(bad_count) == 0, "count": int(bad_count)}
+
+        record("no null client_id or trade_id",
+               clients["client_id"].isna().sum()
+               + trades["trade_id"].isna().sum() + trades["client_id"].isna().sum()
+               + logins["login_id"].isna().sum() + logins["client_id"].isna().sum())
+
+        record("trade value greater than 0",
+               trades["value"].isna().sum() + (trades["value"] <= 0).sum())
+
+        record("no duplicate primary keys",
+               clients["client_id"].duplicated().sum()
+               + trades["trade_id"].duplicated().sum()
+               + logins["login_id"].duplicated().sum())
+
+        record("all foreign keys resolve",
+               (~trades["client_id"].isin(clients["client_id"])).sum()
+               + (~logins["client_id"].isin(clients["client_id"])).sum())
+
+        def out_of_range(s):
+            return ((s < self.START) | (s > self.END)).sum()
+
+        record("all dates within 2025-01-01 to 2025-12-31",
+               out_of_range(trades["trade_date"]) + out_of_range(logins["login_date"]))
+
+        # reconciliation: before = after + rejected, and after = real file length
+        actual = {"clients": len(clients), "trades": len(trades), "logins": len(logins)}
+        mismatches = 0
+        for table, c in self.counts.items():
+            if c["before"] != c["after"] + c["rejected"] or c["after"] != actual[table]:
+                mismatches += 1
+        record("row counts reconcile (before = after + rejected)", mismatches)
+
+        return results
+
+    def write_quality_report(self, results):
+        lines = ["QUALITY REPORT", "=" * 50, ""]
+        for name, r in results.items():
+            status = "PASS" if r["passed"] else "FAIL"
+            lines.append(f"[{status}] {name}  (problem rows: {r['count']})")
+
+        lines += ["", "ROW COUNTS", "-" * 50]
+        for table, c in self.counts.items():
+            lines.append(f"{table}: before={c['before']}  after={c['after']}  "
+                         f"rejected={c['rejected']}")
+
+        path = os.path.join(self.silver_dir, "quality_report.txt")
+        with open(path, "w") as f:
+            f.write("\n".join(lines))

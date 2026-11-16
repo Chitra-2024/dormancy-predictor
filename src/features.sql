@@ -70,4 +70,5 @@ FROM read_parquet('{silver_dir}/clients.parquet') c
 CROSS JOIN params p
 JOIN t      ON c.client_id = t.client_id
 LEFT JOIN l ON c.client_id = l.client_id
-LEFT JOIN y ON c.client_id = y.client_id;
+LEFT JOIN y ON c.client_id = y.client_id
+ORDER BY c.client_id;

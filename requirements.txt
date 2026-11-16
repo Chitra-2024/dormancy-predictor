@@ -4,5 +4,5 @@ duckdb
 pyarrow
 scikit-learn
 matplotlib
-pytest
+pytest<9
 ipykernel

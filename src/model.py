@@ -8,6 +8,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.metrics import (average_precision_score, confusion_matrix,
                              f1_score, precision_score, recall_score,
                              roc_auc_score)
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 class DormancyModel:
     """Trains and evaluates a dormancy classifier."""
@@ -79,3 +80,27 @@ class DormancyModel:
         names = self.pipeline.named_steps["prep"].get_feature_names_out()
         imp = self.pipeline.named_steps["model"].feature_importances_
         return pd.Series(imp, index=names).sort_values(ascending=False)
+
+    def _net_value(self, y, pred, cost, save_rate, value):
+        y, pred = np.asarray(y), np.asarray(pred)
+        tp = int(((pred == 1) & (y == 1)).sum())
+        called = int(pred.sum())
+        return tp * save_rate * value - called * cost
+
+    def sweep(self, y, p, cost=50, save_rate=0.30, value=2000):
+        """Net value at each threshold from 0.05 to 0.95."""
+        rows = []
+        for t in np.arange(0.05, 0.951, 0.05):
+            pred = (p >= t).astype(int)
+            rows.append({"threshold": round(float(t), 2),
+                         "net_value": self._net_value(y, pred, cost, save_rate, value),
+                         "called": int(pred.sum())})
+        return pd.DataFrame(rows)
+
+    def best_threshold(self, cost=50, save_rate=0.30, value=2000):
+        """Pick the threshold on TRAIN using out-of-fold probabilities."""
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        p_oof = cross_val_predict(self.pipeline, self.X_train, self.y_train,
+                                  cv=cv, method="predict_proba")[:, 1]
+        table = self.sweep(self.y_train, p_oof, cost, save_rate, value)
+        return float(table.loc[table["net_value"].idxmax(), "threshold"])
